@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 爆款脚本转化系统</title>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f3f4f6; color: #333; margin: 0; padding: 40px; display: flex; justify-content: center; }
+        .container { background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); width: 100%; max-width: 800px; }
+        h1 { font-size: 24px; margin-top: 0; color: #111; }
+        .form-group { margin-bottom: 20px; }
+        label { display: block; font-weight: bold; margin-bottom: 8px; font-size: 14px; }
+        input[type="text"], select { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 6px; box-sizing: border-box; font-size: 14px; }
+        button { background-color: #000; color: #fff; border: none; padding: 12px 24px; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: bold; transition: background 0.3s; width: 100%; }
+        button:hover { background-color: #333; }
+        button:disabled { background-color: #999; cursor: not-allowed; }
+        .result-box { margin-top: 30px; padding: 20px; background-color: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px; min-height: 150px; white-space: pre-wrap; font-size: 15px; line-height: 1.6; }
+        .loading { text-align: center; color: #666; font-style: italic; }
+    </style>
+</head>
+<body>
+
+<div id="app" class="container">
+    <h1>🚀 AI 多媒体内容创作流水线</h1>
+    
+    <div class="form-group">
+        <label>目标网页链接 (URL):</label>
+        <input type="text" v-model="url" placeholder="例如: https://zh.wikipedia.org/wiki/Node.js">
+    </div>
+
+    <div class="form-group">
+        <label>生成文案调性:</label>
+        <select v-model="style">
+            <option value="小红书种草">🍎 小红书种草 (多Emoji，情绪价值拉满)</option>
+            <option value="抖音短视频分镜">🎵 抖音短视频分镜 (侧重视觉画面与口语化)</option>
+            <option value="科技向技术解析">💻 科技向技术解析 (专业客观，条理清晰)</option>
+        </select>
+    </div>
+
+    <button @click="generateScript" :disabled="loading">
+        {{ loading ? 'AI 正在疯狂阅读与创作中...' : '一键生成文案' }}
+    </button>
+
+    <div class="result-box">
+        <div v-if="loading" class="loading">请求可能需要十几秒，请耐心等待...</div>
+        <div v-else-if="result">{{ result }}</div>
+        <div v-else style="color: #999; text-align: center;">生成的文案将显示在这里</div>
+    </div>
+</div>
+
+<script>
+    const { createApp, ref } = Vue;
+
+    createApp({
+        setup() {
+            const url = ref('');
+            const style = ref('小红书种草');
+            const loading = ref(false);
+            const result = ref('');
+
+            const generateScript = async () => {
+                if (!url.value) {
+                    alert('请先输入你要抓取的网页链接！');
+                    return;
+                }
+
+                loading.value = true;
+                result.value = '';
+
+                try {
+                    // 调用你刚写好的 Node.js 后台接口
+                    const response = await fetch('http://localhost:3000/api/generate-script', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            targetUrl: url.value,
+                            style: style.value
+                        })
+                    });
+
+                    const data = await response.json();
+                    
+                    if (data.status === 'success') {
+                        result.value = data.data.script;
+                    } else {
+                        result.value = `❌ 发生错误: ${data.error}`;
+                    }
+                } catch (error) {
+                    result.value = `❌ 请求失败，请检查 Node.js 后端是否已启动。错误信息: ${error.message}`;
+                } finally {
+                    loading.value = false;
+                }
+            };
+
+            return { url, style, loading, result, generateScript };
+        }
+    }).mount('#app');
+</script>
+
+</body>
+</html>
