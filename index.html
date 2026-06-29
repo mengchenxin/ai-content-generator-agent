@@ -59,6 +59,7 @@
             const loading = ref(false);
             const result = ref('');
 
+// 替换原有的 generateScript 函数
             const generateScript = async () => {
                 if (!url.value) {
                     alert('请先输入你要抓取的网页链接！');
@@ -66,11 +67,11 @@
                 }
 
                 loading.value = true;
-                result.value = '';
+                result.value = ''; // 清空结果框，准备迎接打字机
 
                 try {
-                    // 调用你刚写好的 Node.js 后台接口
-                    const response = await fetch('http://localhost:3000/api/generate-script', {
+                    // 注意：这里换成了我们新写的流式接口 /api/generate-stream
+                    const response = await fetch('http://localhost:3000/api/generate-stream', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
@@ -79,16 +80,48 @@
                         })
                     });
 
-                    const data = await response.json();
-                    
-                    if (data.status === 'success') {
-                        result.value = data.data.script;
-                    } else {
-                        result.value = `❌ 发生错误: ${data.error}`;
+                    // 抓取阶段结束，开始打字阶段
+                    loading.value = false;
+
+                    // 1. 获取数据流的读取器
+                    const reader = response.body.getReader();
+                    const decoder = new TextDecoder('utf-8');
+
+                    // 2. 循环读取数据块
+                    while (true) {
+                        const { done, value } = await reader.read();
+                        if (done) break; // 读取结束，跳出循环
+
+                        // 将二进制数据解码为文本
+                        const chunkStr = decoder.decode(value, { stream: true });
+                        
+                        // 由于可能一次收到多个 "data: xxx\n\n"，需要按行分割处理
+                        const lines = chunkStr.split('\n');
+                        for (const line of lines) {
+                            if (line.startsWith('data: ')) {
+                                const dataStr = line.replace('data: ', '');
+                                
+                                // 判断是否是结束标志
+                                if (dataStr === '[DONE]') {
+                                    break;
+                                }
+
+                                try {
+                                    // 解析 JSON 并追加到页面显示中
+                                    const parsed = JSON.parse(dataStr);
+                                    if (parsed.error) {
+                                        result.value += `\n\n❌ ${parsed.error}`;
+                                    } else if (parsed.text) {
+                                        result.value += parsed.text; // 核心：逐字追加
+                                    }
+                                } catch (e) {
+                                    console.error('JSON解析跳过:', dataStr);
+                                }
+                            }
+                        }
                     }
                 } catch (error) {
-                    result.value = `❌ 请求失败，请检查 Node.js 后端是否已启动。错误信息: ${error.message}`;
-                } finally {
+                    result.value = `❌ 请求失败，错误信息: ${error.message}`;
                     loading.value = false;
                 }
             };
