@@ -6,9 +6,12 @@
     <title>AI 爆款脚本转化系统</title>
     <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
     <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f3f4f6; color: #333; margin: 0; padding: 40px; display: flex; justify-content: center; }
-        .container { background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); width: 100%; max-width: 800px; }
-        h1 { font-size: 24px; margin-top: 0; color: #111; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f3f4f6; color: #333; margin: 0; padding: 20px; display: flex; justify-content: center; }
+        .layout { display: flex; gap: 20px; width: 100%; max-width: 1200px; }
+        .container { background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); flex: 2; }
+        .sidebar { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); flex: 1; height: fit-content; max-height: 90vh; overflow-y: auto; }
+        h1, h3 { font-size: 24px; margin-top: 0; color: #111; }
+        h3 { font-size: 18px; border-bottom: 2px solid #eee; padding-bottom: 10px; }
         .form-group { margin-bottom: 20px; }
         label { display: block; font-weight: bold; margin-bottom: 8px; font-size: 14px; }
         input[type="text"], select { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 6px; box-sizing: border-box; font-size: 14px; }
@@ -17,40 +20,61 @@
         button:disabled { background-color: #999; cursor: not-allowed; }
         .result-box { margin-top: 30px; padding: 20px; background-color: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px; min-height: 150px; white-space: pre-wrap; font-size: 15px; line-height: 1.6; }
         .loading { text-align: center; color: #666; font-style: italic; }
+        
+        /* 历史记录样式 */
+        .history-item { padding: 15px; border-bottom: 1px solid #eee; cursor: pointer; transition: background 0.2s; }
+        .history-item:hover { background-color: #f9fafb; }
+        .history-url { font-size: 12px; color: #666; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 5px; }
+        .history-tag { font-size: 12px; background: #e5e7eb; padding: 2px 8px; border-radius: 12px; font-weight: bold; display: inline-block; margin-bottom: 5px;}
+        .history-preview { font-size: 13px; color: #333; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
     </style>
 </head>
 <body>
 
-<div id="app" class="container">
-    <h1>🚀 AI 多媒体内容创作流水线</h1>
-    
-    <div class="form-group">
-        <label>目标网页链接 (URL):</label>
-        <input type="text" v-model="url" placeholder="例如: https://zh.wikipedia.org/wiki/Node.js">
+<div id="app" class="layout">
+    <div class="container">
+        <h1>🚀 AI 多媒体内容创作流水线</h1>
+        
+        <div class="form-group">
+            <label>目标网页链接 (URL):</label>
+            <input type="text" v-model="url" placeholder="例如: 随便找一篇长文章的链接">
+        </div>
+
+        <div class="form-group">
+            <label>生成文案调性:</label>
+            <select v-model="style">
+                <option value="小红书种草">🍎 小红书种草 (多Emoji，情绪价值拉满)</option>
+                <option value="抖音短视频分镜">🎵 抖音短视频分镜 (侧重视觉画面与口语化)</option>
+                <option value="科技向技术解析">💻 科技向技术解析 (专业客观，条理清晰)</option>
+            </select>
+        </div>
+
+        <button @click="generateScript" :disabled="loading">
+            {{ loading ? 'AI 正在疯狂阅读与创作中...' : '一键生成文案' }}
+        </button>
+
+        <div class="result-box">
+            <div v-if="loading && !result" class="loading">正在启动抓取引擎，请稍候...</div>
+            <div v-else-if="result">{{ result }}</div>
+            <div v-else style="color: #999; text-align: center;">生成的文案将显示在这里</div>
+        </div>
     </div>
 
-    <div class="form-group">
-        <label>生成文案调性:</label>
-        <select v-model="style">
-            <option value="小红书种草">🍎 小红书种草 (多Emoji，情绪价值拉满)</option>
-            <option value="抖音短视频分镜">🎵 抖音短视频分镜 (侧重视觉画面与口语化)</option>
-            <option value="科技向技术解析">💻 科技向技术解析 (专业客观，条理清晰)</option>
-        </select>
-    </div>
-
-    <button @click="generateScript" :disabled="loading">
-        {{ loading ? 'AI 正在疯狂阅读与创作中...' : '一键生成文案' }}
-    </button>
-
-    <div class="result-box">
-        <div v-if="loading" class="loading">请求可能需要十几秒，请耐心等待...</div>
-        <div v-else-if="result">{{ result }}</div>
-        <div v-else style="color: #999; text-align: center;">生成的文案将显示在这里</div>
+    <div class="sidebar">
+        <h3>📂 历史生成记录</h3>
+        <div v-if="historyList.length === 0" style="color:#999; text-align:center; font-size: 14px; margin-top:20px;">
+            暂无记录，快去生成第一篇爆款吧！
+        </div>
+        <div v-for="item in historyList" :key="item.id" class="history-item" @click="showHistoryDetail(item)">
+            <div class="history-tag">{{ item.style }}</div>
+            <div class="history-url">{{ item.targetUrl }}</div>
+            <div class="history-preview">{{ item.content }}</div>
+        </div>
     </div>
 </div>
 
 <script>
-    const { createApp, ref } = Vue;
+    const { createApp, ref, onMounted } = Vue;
 
     createApp({
         setup() {
@@ -58,75 +82,78 @@
             const style = ref('小红书种草');
             const loading = ref(false);
             const result = ref('');
+            const historyList = ref([]); // 存放历史记录的数组
 
-// 替换原有的 generateScript 函数
-            const generateScript = async () => {
-                if (!url.value) {
-                    alert('请先输入你要抓取的网页链接！');
-                    return;
+            // 获取历史记录的函数
+            const fetchHistory = async () => {
+                try {
+                    const res = await fetch('http://localhost:3000/api/history');
+                    const data = await res.json();
+                    if (data.status === 'success') {
+                        historyList.value = data.data;
+                    }
+                } catch (error) {
+                    console.error('获取历史记录失败', error);
                 }
+            };
 
+            // 页面加载时自动获取一次历史记录
+            onMounted(() => {
+                fetchHistory();
+            });
+
+            // 点击历史记录卡片，在左侧展示完整内容
+            const showHistoryDetail = (item) => {
+                result.value = item.content;
+                url.value = item.targetUrl;
+                style.value = item.style;
+            };
+
+            const generateScript = async () => {
+                if (!url.value) { alert('请先输入你要抓取的网页链接！'); return; }
                 loading.value = true;
-                result.value = ''; // 清空结果框，准备迎接打字机
+                result.value = '';
 
                 try {
-                    // 注意：这里换成了我们新写的流式接口 /api/generate-stream
                     const response = await fetch('http://localhost:3000/api/generate-stream', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            targetUrl: url.value,
-                            style: style.value
-                        })
+                        body: JSON.stringify({ targetUrl: url.value, style: style.value })
                     });
 
-                    // 抓取阶段结束，开始打字阶段
-                    loading.value = false;
-
-                    // 1. 获取数据流的读取器
                     const reader = response.body.getReader();
                     const decoder = new TextDecoder('utf-8');
 
-                    // 2. 循环读取数据块
                     while (true) {
                         const { done, value } = await reader.read();
-                        if (done) break; // 读取结束，跳出循环
+                        if (done) break;
 
-                        // 将二进制数据解码为文本
                         const chunkStr = decoder.decode(value, { stream: true });
-                        
-                        // 由于可能一次收到多个 "data: xxx\n\n"，需要按行分割处理
                         const lines = chunkStr.split('\n');
                         for (const line of lines) {
                             if (line.startsWith('data: ')) {
                                 const dataStr = line.replace('data: ', '');
-                                
-                                // 判断是否是结束标志
-                                if (dataStr === '[DONE]') {
-                                    break;
-                                }
-
+                                if (dataStr === '[DONE]') break;
                                 try {
-                                    // 解析 JSON 并追加到页面显示中
                                     const parsed = JSON.parse(dataStr);
-                                    if (parsed.error) {
-                                        result.value += `\n\n❌ ${parsed.error}`;
-                                    } else if (parsed.text) {
-                                        result.value += parsed.text; // 核心：逐字追加
-                                    }
-                                } catch (e) {
-                                    console.error('JSON解析跳过:', dataStr);
-                                }
+                                    if (parsed.error) result.value += `\n\n❌ ${parsed.error}`;
+                                    else if (parsed.text) result.value += parsed.text;
+                                } catch (e) {}
                             }
                         }
                     }
+                    
+                    // 生成结束后，重新拉取一次历史记录，更新右侧列表
+                    await fetchHistory();
+
                 } catch (error) {
                     result.value = `❌ 请求失败，错误信息: ${error.message}`;
+                } finally {
                     loading.value = false;
                 }
             };
 
-            return { url, style, loading, result, generateScript };
+            return { url, style, loading, result, historyList, generateScript, showHistoryDetail };
         }
     }).mount('#app');
 </script>
