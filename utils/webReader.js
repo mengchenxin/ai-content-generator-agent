@@ -7,8 +7,13 @@ async function extractTextFromUrl(url) {
         console.log(`[Puppeteer] 正在启动无头浏览器抓取: ${url}`);
         // 启动浏览器
         browser = await puppeteer.launch({
-            headless: 'new',
-            args: ['--no-sandbox', '--disable-setuid-sandbox'] // 避免一些权限报错
+            headless: true,
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-gpu'
+            ]
         });
 
         const page = await browser.newPage();

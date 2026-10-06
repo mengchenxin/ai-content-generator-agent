@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: ai-content-generator
+    runtime: node
+    plan: free
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: DEEPSEEK_API_KEY
+        sync: false

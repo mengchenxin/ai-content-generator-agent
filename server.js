@@ -1,5 +1,6 @@
 // server.js
 require('dotenv').config();
+const path = require('path');
 const express = require('express');
 const cors = require('cors');
 const { OpenAI } = require('openai');
@@ -8,16 +9,14 @@ const { initDB, addScript, getHistory } = require('./db');
 
 const app = express();
 
-// 🛠️ 核心高可用机制：API 调用重试包装器
+// 🛠️ 高可用机制：API 调用重试包装器
 async function withRetry(apiCallFunc, maxRetries = 3) {
     for (let i = 0; i < maxRetries; i++) {
         try {
-            return await apiCallFunc(); // 尝试执行
+            return await apiCallFunc();
         } catch (error) {
             console.error(`[容错机制] 第 ${i + 1} 次请求大模型失败:`, error.message);
-            if (i === maxRetries - 1) throw error; // 最后一次还失败，就真的抛出异常
-            
-            // 指数退避策略：失败后等待 1s, 2s, 4s 再重试 (面试绝对的高级加分项！)
+            if (i === maxRetries - 1) throw error;
             const waitTime = Math.pow(2, i) * 1000;
             console.log(`[容错机制] 准备在 ${waitTime}ms 后重试...`);
             await new Promise(resolve => setTimeout(resolve, waitTime));
@@ -34,10 +33,30 @@ const aiClient = new OpenAI({
     apiKey: process.env.DEEPSEEK_API_KEY 
 });
 
-// 流式生成接口 (带本地 JSON 数据库保存)
+// 🎯 核心武器库定义：告诉大模型你拥有哪些“超能力”
+const agentTools = [
+    {
+        type: "function",
+        function: {
+            name: "fetch_web_content",
+            description: "当用户提供了一个URL或者网页链接，并且你需要分析、提炼或转化该网页内容时，必须调用此工具。它能利用无头浏览器提取网页的纯文本内容。",
+            parameters: {
+                type: "object",
+                properties: {
+                    url: {
+                        type: "string",
+                        description: "需要爬取和解析的完整网页 URL 链接"
+                    }
+                },
+                required: ["url"]
+            }
+        }
+    }
+];
+
+// 🚀 自主决策 Agent 流式交互接口
 app.post('/api/generate-stream', async (req, res) => {
     const { targetUrl, style } = req.body;
-    if (!targetUrl) return res.status(400).json({ error: '必须提供目标网页链接' });
 
     // 设置 SSE 流式响应头
     res.setHeader('Content-Type', 'text/event-stream');
@@ -45,68 +64,91 @@ app.post('/api/generate-stream', async (req, res) => {
     res.setHeader('Connection', 'keep-alive');
 
     try {
-        // 1. 用 Puppeteer 爬取网页
-        console.log(`[Stream] 正在读取网页: ${targetUrl}`);
-        const sourceText = await extractTextFromUrl(targetUrl);
+        console.log('\n[Agent大脑] 收到用户指令，正在激活思考流...');
 
-        console.log('[Agent] 开始执行多段式意图组装...');
-        
-        // 🧱 亮点三：多段式 Prompt 模板设计
-        // 1. 角色设定与底层逻辑 (System)
-        const systemPrompt = `你是一个资深的新媒体运营与爆款编导智能体。你的任务是将枯燥的网页内容转化为高转化的【${style || '小红书'}】风格内容。
-        严格遵守以下规则：
-        1. 必须使用 JSON 格式或结构化的分段来思考。
-        2. 拒绝输出任何未经证实的虚假数据。`;
+        // 1. 初始化 Agent 的记忆上下文与 System Prompt 规则
+        const systemPrompt = `你是一个拥有自主决策能力的新媒体运营编导 Agent。
+        你擅长分析用户意图，并在必要时调用工具获取外部知识。
+        最终输出的内容必须符合【${style || '小红书'}】的爆款种草调性：带大量Emoji、黄金前三秒吸睛、干货列表清晰、文末有互动引导。`;
 
-        // 2. 注入 KOL 文案结构与分镜逻辑 (Few-Shot / Intent Control)
-        const kolStructure = `
-        【结构约束】：
-        - 标题：必须包含痛点+解决方案，带 💡 或 🔥 等 Emoji，不超过 15 个字。
-        - 黄金前三秒：用一个反问句抓住眼球。
-        - 核心干货：用 1-2-3 列表提取网页中最有价值的信息。
-        - 互动引导：结尾抛出一个问题引导评论。`;
+        // 组装对话历史
+        const messageHistory = [
+            { role: "system", content: systemPrompt },
+            {
+                role: "user",
+                content: `请帮我处理这个任务。用户输入的线索或链接是: "${targetUrl || '无'}". 风格要求: ${style}`
+            }
+        ];
 
-        // 3. 用户输入 (User)
-        const userPrompt = `这是提取到的网页内容，请严格按照上述结构进行提炼与转化：\n\n${sourceText}`;
+        // 2. Thought阶段：让大模型进行第一轮思考，决定是否调用工具
+        console.log('[Agent思考] 正在评估是否需要使用工具箱...');
+        const firstResponse = await aiClient.chat.completions.create({
+            model: "deepseek-chat",
+            messages: messageHistory,
+            tools: agentTools, // 塞入工具箱
+            tool_choice: "auto" // 让模型自主决定是否调用
+        });
 
-        console.log('[Stream] 正在呼叫 AI 大模型 (流式模式)...');
-        
-        // 🧱 亮点四：应用指数退避重试机制包裹大模型调用
+        const assistantMessage = firstResponse.choices[0].message;
+        messageHistory.push(assistantMessage); // 记录大模型的思考过程
+
+        // 3. Action & Observation 阶段：如果大模型决定调用工具
+        if (assistantMessage.tool_calls) {
+            console.log(`[Agent决策] 💡 发现网页链接！大脑决定主动触发工具。`);
+
+            for (const toolCall of assistantMessage.tool_calls) {
+                if (toolCall.function.name === "fetch_web_content") {
+                    // 解析大模型自主生成的工具参数
+                    const toolArgs = JSON.parse(toolCall.function.arguments);
+                    console.log(`[Agent行动] 🎬 执行工具 [fetch_web_content]，参数 URL: ${toolArgs.url}`);
+
+                    // 真正执行底层的 Puppeteer 爬虫
+                    const webTextResult = await extractTextFromUrl(toolArgs.url);
+
+                    // 将观察到的客观现实反馈给大模型大脑
+                    messageHistory.push({
+                        role: "tool",
+                        tool_call_id: toolCall.id,
+                        name: "fetch_web_content",
+                        content: webTextResult
+                    });
+                    console.log(`[Agent观察] 🔍 爬虫成功返回 ${webTextResult.length} 字的文本，已塞回大模型记忆区。`);
+                }
+            }
+        } else {
+            console.log('[Agent决策] 📋 用户未提供有效链接或无需触网，大脑决定直接基于已有知识库解答。');
+        }
+
+        // 4. Final Answer 阶段：大脑整合所有观察到的资料，发起流式最终创作
+        console.log('[Agent输出] ✍️ 正在进行最终的爆款文案流式推流...');
         const stream = await withRetry(async () => {
             return await aiClient.chat.completions.create({
-                model: "deepseek-chat", 
-                messages: [
-                    { role: "system", content: systemPrompt },
-                    { role: "user", content: kolStructure },      // 独立剥离的结构约束
-                    { role: "assistant", content: "收到。我已经理解了结构约束，请提供原始网页内容。" }, // 预热引导
-                    { role: "user", content: userPrompt }         // 真实的输入
-                ],
-                temperature: 0.7,
-                stream: true, 
+                model: "deepseek-chat",
+                messages: messageHistory, // 此时历史记录里已经包含了工具返回的网页内容
+                stream: true
             });
         });
 
         let fullGeneratedText = "";
-
         for await (const chunk of stream) {
             const text = chunk.choices[0]?.delta?.content || "";
             if (text) {
-                fullGeneratedText += text; // 拼接完整文案
+                fullGeneratedText += text;
                 res.write(`data: ${JSON.stringify({ text })}\n\n`);
             }
         }
 
-        // 4. 生成完毕，异步存入本地 JSON 数据库
+        // 5. 将智能体最终辛勤劳动的成果异步存入本地 JSON 数据库
         if (fullGeneratedText) {
-            await addScript(targetUrl, style, fullGeneratedText);
+            await addScript(targetUrl || '自主知识库问答', style, fullGeneratedText);
         }
 
         res.write(`data: [DONE]\n\n`);
         res.end();
 
     } catch (error) {
-        console.error("生成失败:", error);
-        res.write(`data: ${JSON.stringify({ error: 'AI 生成过程中发生错误' })}\n\n`);
+        console.error("[Agent崩溃] 核心调度链路发生异常:", error);
+        res.write(`data: ${JSON.stringify({ error: '智能体调度失败: ' + error.message })}\n\n`);
         res.end();
     }
 });
@@ -121,12 +163,22 @@ app.get('/api/history', async (req, res) => {
     }
 });
 
+// Render health check
+app.get('/healthz', (req, res) => {
+    res.status(200).send('ok');
+});
+
+// Serve the single-page frontend from the same service.
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'index.html'));
+});
+
 const PORT = process.env.PORT || 3000;
 
-// 确保 JSON 数据库初始化完成后再开服
+// 确保数据库准备完毕再启动服务
 initDB().then(() => {
-    app.listen(PORT, () => {
-        console.log(`🚀 服务器完全体启动成功: http://localhost:${PORT}`);
+    app.listen(PORT, '0.0.0.0', () => {
+        console.log(`\n🚀 AI Content Generator is listening on port ${PORT}`);
     });
 }).catch(err => {
     console.error('系统初始化失败', err);

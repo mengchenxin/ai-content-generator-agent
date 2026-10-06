@@ -87,7 +87,7 @@
             // 获取历史记录的函数
             const fetchHistory = async () => {
                 try {
-                    const res = await fetch('http://localhost:3000/api/history');
+                    const res = await fetch('/api/history');
                     const data = await res.json();
                     if (data.status === 'success') {
                         historyList.value = data.data;
@@ -115,7 +115,7 @@
                 result.value = '';
 
                 try {
-                    const response = await fetch('http://localhost:3000/api/generate-stream', {
+                    const response = await fetch('/api/generate-stream', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ targetUrl: url.value, style: style.value })
