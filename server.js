@@ -5,9 +5,14 @@ const express = require('express');
 const cors = require('cors');
 const { OpenAI } = require('openai');
 const { extractTextFromUrl } = require('./utils/webReader');
+const { validatePost } = require('./utils/postParser');
 const { initDB, addScript, getHistory } = require('./db');
 
 const app = express();
+
+// 结构校验没过时最多重写 1 次。再多容易陷入"越改越差"，
+// 而且每次都推一遍流、多花一次 token，不如降级存下来。
+const MAX_REWRITE = 1;
 
 // 🛠️ 高可用机制：API 调用重试包装器
 async function withRetry(apiCallFunc, maxRetries = 3) {
@@ -29,11 +34,11 @@ app.use(express.json());
 
 // 初始化大模型客户端
 const aiClient = new OpenAI({
-    baseURL: 'https://api.deepseek.com', 
-    apiKey: process.env.DEEPSEEK_API_KEY 
+    baseURL: 'https://api.deepseek.com',
+    apiKey: process.env.DEEPSEEK_API_KEY
 });
 
-// 🎯 核心武器库定义：告诉大模型你拥有哪些“超能力”
+// 🎯 核心武器库定义：告诉大模型你拥有哪些"超能力"
 const agentTools = [
     {
         type: "function",
@@ -54,6 +59,25 @@ const agentTools = [
     }
 ];
 
+// 一次流式生成：正文边收边推给前端，最后把完整文本返回给调用方做校验
+async function streamToClient(res, messages) {
+    let fullText = '';
+    const stream = await withRetry(() => aiClient.chat.completions.create({
+        model: "deepseek-chat",
+        messages,
+        stream: true
+    }));
+
+    for await (const chunk of stream) {
+        const piece = chunk.choices[0]?.delta?.content || '';
+        if (piece) {
+            fullText += piece;
+            res.write(`data: ${JSON.stringify({ text: piece })}\n\n`);
+        }
+    }
+    return fullText;
+}
+
 // 🚀 自主决策 Agent 流式交互接口
 app.post('/api/generate-stream', async (req, res) => {
     const { targetUrl, style } = req.body;
@@ -66,12 +90,11 @@ app.post('/api/generate-stream', async (req, res) => {
     try {
         console.log('\n[Agent大脑] 收到用户指令，正在激活思考流...');
 
-        // 1. 初始化 Agent 的记忆上下文与 System Prompt 规则
         const systemPrompt = `你是一个拥有自主决策能力的新媒体运营编导 Agent。
         你擅长分析用户意图，并在必要时调用工具获取外部知识。
-        最终输出的内容必须符合【${style || '小红书'}】的爆款种草调性：带大量Emoji、黄金前三秒吸睛、干货列表清晰、文末有互动引导。`;
+        最终输出的内容必须符合【${style || '小红书'}】的爆款种草调性：带大量Emoji、黄金前三秒吸睛、干货列表清晰、文末有互动引导。
+        输出结构要求：第一行是标题（不超过30字），紧接着一段开头钩子，然后三条以上编号的干货列表（每条用 1. 2. 3. 这种阿拉伯数字加英文句点开头），最后一句是引导互动的问题。`;
 
-        // 组装对话历史
         const messageHistory = [
             { role: "system", content: systemPrompt },
             {
@@ -80,70 +103,93 @@ app.post('/api/generate-stream', async (req, res) => {
             }
         ];
 
-        // 2. Thought阶段：让大模型进行第一轮思考，决定是否调用工具
+        // 1. Thought：第一轮先问模型要不要调工具
         console.log('[Agent思考] 正在评估是否需要使用工具箱...');
-        const firstResponse = await aiClient.chat.completions.create({
+        const firstResponse = await withRetry(() => aiClient.chat.completions.create({
             model: "deepseek-chat",
             messages: messageHistory,
-            tools: agentTools, // 塞入工具箱
-            tool_choice: "auto" // 让模型自主决定是否调用
-        });
+            tools: agentTools,
+            tool_choice: "auto"
+        }));
 
         const assistantMessage = firstResponse.choices[0].message;
-        messageHistory.push(assistantMessage); // 记录大模型的思考过程
+        messageHistory.push(assistantMessage);
 
-        // 3. Action & Observation 阶段：如果大模型决定调用工具
-        if (assistantMessage.tool_calls) {
-            console.log(`[Agent决策] 💡 发现网页链接！大脑决定主动触发工具。`);
+        // 2. Action & Observation：模型决定调用就真去抓
+        let fetchMeta = null;
+        if (assistantMessage.tool_calls?.length) {
+            console.log('[Agent决策] 💡 发现网页链接，大脑决定主动触发工具。');
 
             for (const toolCall of assistantMessage.tool_calls) {
-                if (toolCall.function.name === "fetch_web_content") {
-                    // 解析大模型自主生成的工具参数
-                    const toolArgs = JSON.parse(toolCall.function.arguments);
-                    console.log(`[Agent行动] 🎬 执行工具 [fetch_web_content]，参数 URL: ${toolArgs.url}`);
+                if (toolCall.function.name !== "fetch_web_content") continue;
 
-                    // 真正执行底层的 Puppeteer 爬虫
-                    const webTextResult = await extractTextFromUrl(toolArgs.url);
+                const toolArgs = JSON.parse(toolCall.function.arguments);
+                console.log(`[Agent行动] 🎬 执行工具，URL: ${toolArgs.url}`);
 
-                    // 将观察到的客观现实反馈给大模型大脑
-                    messageHistory.push({
-                        role: "tool",
-                        tool_call_id: toolCall.id,
-                        name: "fetch_web_content",
-                        content: webTextResult
-                    });
-                    console.log(`[Agent观察] 🔍 爬虫成功返回 ${webTextResult.length} 字的文本，已塞回大模型记忆区。`);
-                }
+                const result = await extractTextFromUrl(toolArgs.url);
+                fetchMeta = result;
+
+                messageHistory.push({
+                    role: "tool",
+                    tool_call_id: toolCall.id,
+                    name: "fetch_web_content",
+                    content: result.text
+                });
+                console.log(`[Agent观察] 🔍 抓到 ${result.text.length} 字${result.truncated ? '（原文更长，已截断）' : ''}，塞回记忆区。`);
             }
         } else {
-            console.log('[Agent决策] 📋 用户未提供有效链接或无需触网，大脑决定直接基于已有知识库解答。');
+            console.log('[Agent决策] 📋 无需触网，直接基于已有知识回答。');
         }
 
-        // 4. Final Answer 阶段：大脑整合所有观察到的资料，发起流式最终创作
-        console.log('[Agent输出] ✍️ 正在进行最终的爆款文案流式推流...');
-        const stream = await withRetry(async () => {
-            return await aiClient.chat.completions.create({
-                model: "deepseek-chat",
-                messages: messageHistory, // 此时历史记录里已经包含了工具返回的网页内容
-                stream: true
+        // 3. Final Answer：流式生成 + 结构校验，不合格让模型重写
+        let attempt = 1;
+        let finalText = '';
+        let post = null;
+        let validated = false;
+
+        while (true) {
+            finalText = await streamToClient(res, messageHistory);
+            const check = validatePost(finalText);
+
+            if (check.ok) {
+                post = check.data;
+                validated = true;
+                break;
+            }
+
+            // 校验没过也先留下解析结果：万一下一轮还失败，至少能存降级内容
+            post = check.data;
+
+            if (attempt > MAX_REWRITE) {
+                console.warn('[结构校验] 重写次数用尽，降级保存：', check.issues.join(' / '));
+                break;
+            }
+
+            console.log(`[结构校验] 第 ${attempt} 版不合格：${check.issues.join(' / ')}，让模型重写`);
+            // 告诉前端清空重来，否则两版内容会叠在一起
+            res.write(`data: ${JSON.stringify({ reset: true, issues: check.issues })}\n\n`);
+
+            messageHistory.push({ role: "assistant", content: finalText });
+            messageHistory.push({
+                role: "user",
+                content: `这一版不符合要求：${check.issues.join('；')}。请严格按结构重写，不要解释，不要加前言。`
             });
+            attempt++;
+        }
+
+        // 4. 结构化结果一并推给前端，前端可以直接拿去渲染卡片
+        res.write(`data: ${JSON.stringify({ post, validated, rewrites: attempt - 1 })}\n\n`);
+
+        // 5. 落库：结构化字段和抓取元信息一起存，方便回看当时怎么跑的
+        await addScript(targetUrl || '自主知识库问答', style, finalText, {
+            post,
+            validated,
+            rewrites: attempt - 1,
+            sourceChars: fetchMeta ? fetchMeta.text.length : 0,
+            fetchCostMs: fetchMeta ? fetchMeta.totalCost : null
         });
 
-        let fullGeneratedText = "";
-        for await (const chunk of stream) {
-            const text = chunk.choices[0]?.delta?.content || "";
-            if (text) {
-                fullGeneratedText += text;
-                res.write(`data: ${JSON.stringify({ text })}\n\n`);
-            }
-        }
-
-        // 5. 将智能体最终辛勤劳动的成果异步存入本地 JSON 数据库
-        if (fullGeneratedText) {
-            await addScript(targetUrl || '自主知识库问答', style, fullGeneratedText);
-        }
-
-        res.write(`data: [DONE]\n\n`);
+        res.write('data: [DONE]\n\n');
         res.end();
 
     } catch (error) {

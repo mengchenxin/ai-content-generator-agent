@@ -20,17 +20,18 @@ async function initDB() {
 }
 
 // 写入新数据的方法
-async function addScript(targetUrl, style, content) {
+async function addScript(targetUrl, style, content, extra = {}) {
     try {
         const rawData = await fs.readFile(DB_FILE, 'utf-8');
         const db = JSON.parse(rawData);
         
-        // 组装一条新记录
+        // 组装一条新记录（extra 用来带结构化字段、重写次数、抓取耗时之类的元信息）
         const newRecord = {
             id: Date.now(), // 用时间戳做简单的唯一ID
             targetUrl,
             style,
             content,
+            ...extra,
             createdAt: new Date().toISOString()
         };
 
